@@ -16,6 +16,7 @@ from telegram.ext import (
     ConversationHandler,
     filters,
     ContextTypes,
+    ApplicationBuilder
 )
 from dotenv import load_dotenv
 import gspread
@@ -23,6 +24,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 from PIL import Image
 from pyzbar.pyzbar import decode
 from logging.handlers import RotatingFileHandler
+import uvicorn
+from fastapi import FastAPI, Request, HTTPException
 
 # Базовая директория
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,8 +50,10 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 ALLOWED_ADMIN_IDS = set(map(int, os.getenv('ALLOWED_ADMIN_IDS', '').split(','))) if os.getenv('ALLOWED_ADMIN_IDS') else set()
 GOOGLE_SHEETS_KEY = os.getenv('GOOGLE_SHEETS_KEY')
-GOOGLE_CREDENTIALS_JSON = os.getenv('GOOGLE_CREDENTIALS_JSON')  # Новая переменная окружения
+GOOGLE_CREDENTIALS_JSON = os.getenv('GOOGLE_CREDENTIALS_JSON')
 ORGANIZER_CONTACT = os.getenv('ORGANIZER_CONTACT', '@Organizer')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Новая переменная окружения для Webhook URL
+PORT = int(os.getenv('PORT', 8000))  # Порт для Render, по умолчанию 8000
 
 # Проверка обязательных переменных
 if not TOKEN:
@@ -66,6 +71,9 @@ if not GOOGLE_SHEETS_KEY:
 if not GOOGLE_CREDENTIALS_JSON:
     logger.error("GOOGLE_CREDENTIALS_JSON не задан в переменных окружения")
     raise ValueError("GOOGLE_CREDENTIALS_JSON не задан в переменных окружения")
+if not WEBHOOK_URL:
+    logger.error("WEBHOOK_URL не задан в .env файле")
+    raise ValueError("WEBHOOK_URL не задан в .env файле")
 
 # Путь к фото для команды /start
 START_PHOTO_PATH = os.path.join(BASE_DIR, 'photo.jpg')
@@ -90,7 +98,6 @@ async def init_google_sheets(retries=3, backoff=2):
     global worksheet, accommodation_worksheet
     for attempt in range(retries):
         try:
-            # Загружаем учетные данные из переменной окружения
             creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             client = gspread.authorize(creds)
@@ -112,7 +119,7 @@ async def init_google_sheets(retries=3, backoff=2):
         except Exception as e:
             logger.error(f"Ошибка инициализации Google Sheets (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                await asyncio.sleep(backoff * (2 ** attempt))  # Экспоненциальная задержка
+                await asyncio.sleep(backoff * (2 ** attempt))
             else:
                 logger.error("Не удалось инициализировать Google Sheets после всех попыток")
                 return False
@@ -121,7 +128,6 @@ async def init_google_sheets(retries=3, backoff=2):
 def escape_markdown(text):
     if not isinstance(text, str):
         text = str(text)
-    # Экранируем специальные символы Markdown
     special_chars = r'([_*[\]()~`>#+\-=|{}.!])'
     return re.sub(special_chars, r'\\\1', text)
 
@@ -155,7 +161,7 @@ dates = ["03.07.2025", "04.07.2025", "05.07.2025", "06.07.2025"]
 # Функция для проверки прав бота в канале
 async def check_channel_permissions(context: ContextTypes.DEFAULT_TYPE):
     try:
-        bot = context.bot  # Используем уже инициализированный бот из контекста
+        bot = context.bot
         chat_member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=bot.id)
         if chat_member.status not in ['administrator', 'creator']:
             logger.error(f"Бот не является администратором канала {CHANNEL_ID}")
@@ -172,10 +178,8 @@ async def check_channel_permissions(context: ContextTypes.DEFAULT_TYPE):
 # Функция для отправки уведомлений админу с повторными попытками
 async def notify_admin(context, message, retries=3, backoff=2):
     escaped_message = escape_markdown(message)
-    # Попробуем отправить уведомление в канал
     for attempt in range(retries):
         try:
-            # Проверяем права бота перед отправкой
             can_send = await check_channel_permissions(context)
             if not can_send:
                 logger.error(f"Бот не может отправить уведомление админу: отсутствуют права в канале {CHANNEL_ID}")
@@ -186,7 +190,7 @@ async def notify_admin(context, message, retries=3, backoff=2):
         except Exception as e:
             logger.error(f"Не удалось отправить уведомление админу (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                await asyncio.sleep(backoff * (2 ** attempt))  # Экспоненциальная задержка
+                await asyncio.sleep(backoff * (2 ** attempt))
             else:
                 logger.error(f"Не удалось отправить уведомление после {retries} попыток: {e}")
                 return False
@@ -247,7 +251,7 @@ def load_registrations():
         except Exception as e:
             logger.error(f"Ошибка при загрузке регистраций из Google Sheets (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 * (2 ** attempt))  # Экспоненциальная задержка
+                time.sleep(2 * (2 ** attempt))
             else:
                 logger.error("Не удалось загрузить регистрации после всех попыток")
 
@@ -286,7 +290,7 @@ def save_registrations(context=None):
         except Exception as e:
             logger.error(f"Ошибка при сохранении регистраций в Google Sheets (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 * (2 ** attempt))  # Экспоненциальная задержка
+                time.sleep(2 * (2 ** attempt))
             else:
                 logger.error("Не удалось сохранить регистрации после всех попыток")
                 if context:
@@ -325,7 +329,7 @@ def load_accommodations():
         except Exception as e:
             logger.error(f"Ошибка при загрузке расселения из Google Sheets (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 * (2 ** attempt))  # Экспоненциальная задержка
+                time.sleep(2 * (2 ** attempt))
             else:
                 logger.error("Не удалось загрузить расселение после всех попыток")
 
@@ -355,7 +359,7 @@ def save_accommodations(context=None):
         except Exception as e:
             logger.error(f"Ошибка при сохранении расселения в Google Sheets (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 * (2 ** attempt))  # Экспоненциальная задержка
+                time.sleep(2 * (2 ** attempt))
             else:
                 logger.error("Не удалось сохранить расселение после всех попыток")
                 if context:
@@ -394,7 +398,7 @@ def save_stats(context=None):
         except Exception as e:
             logger.error(f"Error saving stats (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 * (2 ** attempt))  # Экспоненциальная задержка
+                time.sleep(2 * (2 ** attempt))
             else:
                 logger.error("Не удалось сохранить статистику после всех попыток")
                 if context:
@@ -517,11 +521,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Error sending photo (attempt {attempt+1}/{retries}): {e}")
                 if attempt < retries - 1:
-                    await asyncio.sleep(backoff * (2 ** attempt))  # Экспоненциальная задержка
+                    await asyncio.sleep(backoff * (2 ** attempt))
                 else:
                     logger.error("Не удалось отправить фото после всех попыток")
                     await notify_admin(context, f"Ошибка отправки фото после {retries} попыток: {e}")
-    # Если фото не удалось отправить или файл отсутствует, отправляем только текст
     await update.message.reply_text(
         welcome_message,
         reply_markup=keyboard,
@@ -751,7 +754,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = False
         for attempt in range(retries):
             try:
-                # Проверяем права бота перед отправкой
                 can_send = await check_channel_permissions(context)
                 if not can_send:
                     logger.error(f"Бот не может отправить сообщение в канал {CHANNEL_ID}: отсутствуют права")
@@ -1308,7 +1310,6 @@ async def scan_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success = False
             for attempt in range(retries):
                 try:
-                    # Проверяем права бота перед отправкой
                     can_send = await check_channel_permissions(context)
                     if not can_send:
                         logger.error(f"Бот не может отправить сообщение в канал {CHANNEL_ID}: отсутствуют права")
@@ -1363,8 +1364,11 @@ def update_accommodation_status(user_id, context=None):
                 if context:
                     asyncio.create_task(notify_admin(context, f"Ошибка обновления статуса user_id={user_id} после {retries} попыток: {e}"))
 
-def main():
-    application = Application.builder().token(TOKEN).build()
+# Инициализация приложения Telegram
+application = ApplicationBuilder().token(TOKEN).build()
+
+# Настройка обработчиков
+def setup_handlers(app):
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(button_callback, pattern='^(agree|confirm_clear|cancel_clear|confirm_sleep|cancel_sleep|need_accommodation|no_accommodation|room_[1-9]|room_10|cancel_accommodation_user|request_accommodation|show_qr|gender_Мужской|gender_Женский)$'),
@@ -1385,17 +1389,46 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)],
     )
     admin_buttons = ["Статистика", "Очистить регистрации", "Разложить спать", "Выйти из админки"]
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_login))
-    application.add_handler(MessageHandler(filters.Text(admin_buttons) & ~filters.COMMAND, handle_admin_buttons))
-    application.add_handler(MessageHandler(filters.Text(["Регистрация", "Расписание", "Спикеры", "Место проведения", "Контакты", "QR Code", "Отменить расселение", "Расселить"]) & ~filters.COMMAND, handle_persistent_buttons))
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("check_qr", check_qr))
-    application.add_handler(MessageHandler(filters.PHOTO, scan_qr))
-    # Выполняем асинхронную инициализацию перед запуском бота
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(startup())
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_login))
+    app.add_handler(MessageHandler(filters.Text(admin_buttons) & ~filters.COMMAND, handle_admin_buttons))
+    app.add_handler(MessageHandler(filters.Text(["Регистрация", "Расписание", "Спикеры", "Место проведения", "Контакты", "QR Code", "Отменить расселение", "Расселить"]) & ~filters.COMMAND, handle_persistent_buttons))
+    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("check_qr", check_qr))
+    app.add_handler(MessageHandler(filters.PHOTO, scan_qr))
 
+# Инициализация FastAPI
+app = FastAPI()
+
+# Эндпоинт для Webhook
+@app.post("/webhook")
+async def webhook(request: Request):
+    update = await request.json()
+    update_obj = Update.de_json(update, application.bot)
+    await application.process_update(update_obj)
+    return {"status": "ok"}
+
+# Функция для настройки Webhook
+async def set_webhook():
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    logger.info(f"Setting webhook to {webhook_url}")
+    await application.bot.setWebhook(webhook_url)
+
+# Инициализация при запуске
+@app.on_event("startup")
+async def on_startup():
+    await startup()  # Инициализация Google Sheets и данных
+    setup_handlers(application)  # Настройка обработчиков
+    await application.initialize()
+    await application.start()
+    await set_webhook()
+
+# Остановка при завершении
+@app.on_event("shutdown")
+async def on_shutdown():
+    await application.stop()
+    await application.shutdown()
+
+# Запуск приложения
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
