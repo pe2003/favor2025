@@ -1429,6 +1429,10 @@ async def on_shutdown():
     await application.stop()
     await application.shutdown()
 
+@app.get("/ping")
+async def ping():
+    return {"status": "alive"}
+    
 # Запуск приложения
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
