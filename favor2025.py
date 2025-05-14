@@ -5,6 +5,8 @@ import io
 import re
 import asyncio
 import time
+import os
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, InputFile, KeyboardButton, Bot
 from telegram.ext import (
     Application,
@@ -15,11 +17,9 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-import os
 from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json
 from PIL import Image
 from pyzbar.pyzbar import decode
 from logging.handlers import RotatingFileHandler
@@ -47,6 +47,7 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 ALLOWED_ADMIN_IDS = set(map(int, os.getenv('ALLOWED_ADMIN_IDS', '').split(','))) if os.getenv('ALLOWED_ADMIN_IDS') else set()
 GOOGLE_SHEETS_KEY = os.getenv('GOOGLE_SHEETS_KEY')
+GOOGLE_CREDENTIALS_JSON = os.getenv('GOOGLE_CREDENTIALS_JSON')  # Новая переменная окружения
 ORGANIZER_CONTACT = os.getenv('ORGANIZER_CONTACT', '@Organizer')
 
 # Проверка обязательных переменных
@@ -62,6 +63,9 @@ if not CHANNEL_ID:
 if not GOOGLE_SHEETS_KEY:
     logger.error("GOOGLE_SHEETS_KEY не задан в .env файле")
     raise ValueError("GOOGLE_SHEETS_KEY не задан в .env файле")
+if not GOOGLE_CREDENTIALS_JSON:
+    logger.error("GOOGLE_CREDENTIALS_JSON не задан в переменных окружения")
+    raise ValueError("GOOGLE_CREDENTIALS_JSON не задан в переменных окружения")
 
 # Путь к фото для команды /start
 START_PHOTO_PATH = os.path.join(BASE_DIR, 'photo.jpg')
@@ -77,12 +81,6 @@ else:
     logger.warning(f"Файл photo.jpg не найден по пути: {START_PHOTO_PATH}. Фото не будет отправлено.")
     START_PHOTO_PATH = None
 
-# Проверка существования credentials.json
-CREDENTIALS_PATH = os.path.join(BASE_DIR, 'credentials.json')
-if not os.path.exists(CREDENTIALS_PATH):
-    logger.error(f"Файл не найден: {CREDENTIALS_PATH}")
-    raise FileNotFoundError(f"Файл не найден: {CREDENTIALS_PATH}")
-
 # Инициализация Google Sheets с повторными попытками
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/spreadsheets']
 worksheet = None
@@ -92,7 +90,9 @@ async def init_google_sheets(retries=3, backoff=2):
     global worksheet, accommodation_worksheet
     for attempt in range(retries):
         try:
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_PATH, scope)
+            # Загружаем учетные данные из переменной окружения
+            creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             client = gspread.authorize(creds)
             spreadsheet = client.open_by_key(GOOGLE_SHEETS_KEY)
             try:
