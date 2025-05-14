@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python favor2025.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        fromDatabase:
+          name: env
+          property: TELEGRAM_BOT_TOKEN
+      - key: CHANNEL_ID
+        fromDatabase:
+          name: env
+          property: CHANNEL_ID
+      - key: GOOGLE_SHEETS_KEY
+        fromDatabase:
+          name: env
+          property: GOOGLE_SHEETS_KEY
+      - key: ADMIN_PASSWORD
+        fromDatabase:
+          name: env
+          property: ADMIN_PASSWORD
+      - key: ALLOWED_ADMIN_IDS
+        fromDatabase:
+          name: env
+          property: ALLOWED_ADMIN_IDS
+      - key: ORGANIZER_CONTACT
+        fromDatabase:
+          name: env
+          property: ORGANIZER_CONTACT
+    autoDeploy: true
