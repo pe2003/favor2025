@@ -9,6 +9,10 @@ services:
         fromDatabase:
           name: env
           property: TELEGRAM_BOT_TOKEN
+      - key: GOOGLE_CREDENTIALS_JSON
+        fromDatabase:
+          name: env
+          property: GOOGLE_CREDENTIALS_JSON
       - key: CHANNEL_ID
         fromDatabase:
           name: env
