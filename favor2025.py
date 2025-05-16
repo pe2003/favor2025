@@ -26,6 +26,7 @@ from pyzbar.pyzbar import decode
 from logging.handlers import RotatingFileHandler
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
+from starlette.routing import Lifespan
 
 # Базовая директория
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1405,7 +1406,7 @@ def update_accommodation_status(user_id, context=None):
             logger.warning(f"User_id {user_id} not found in records for accommodation status update")
             return
         except Exception as e:
-            logger.error(f"Ошибка обновления статуса (попытка {attempt+1}/{retries}): {e}")
+            logger.error(f"Ошибка обновления(big status (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(2 * (2 ** attempt))
             else:
@@ -1448,6 +1449,9 @@ def setup_handlers(app):
 # Инициализация FastAPI
 app = FastAPI()
 
+# Глобальная переменная для Application
+application = ApplicationBuilder().token(TOKEN).build()
+
 # Webhook
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -1462,20 +1466,21 @@ async def set_webhook():
     logger.info(f"Setting webhook to {webhook_url}")
     await application.bot.setWebhook(webhook_url)
 
-# Инициализация
-@app.on_event("startup")
-async def on_startup():
-    await startup()
-    setup_handlers(application)
-    await application.initialize()
-    await application.start()
-    await set_webhook()
-
-# Остановка
-@app.on_event("shutdown")
-async def on_shutdown():
-    await application.stop()
-    await application.shutdown()
+# Инициализация и завершение работы
+@app.on_lifespan()
+async def lifespan():
+    try:
+        # Запуск
+        await startup()
+        setup_handlers(application)
+        await application.initialize()
+        await application.start()
+        await set_webhook()
+        yield
+    finally:
+        # Завершение
+        await application.stop()
+        await application.shutdown()
 
 @app.get("/ping")
 async def ping():
