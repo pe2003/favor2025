@@ -1449,10 +1449,7 @@ def setup_handlers(app):
 # Инициализация FastAPI
 app = FastAPI()
 
-# Глобальная переменная для Application
-application = ApplicationBuilder().token(TOKEN).build()
-
-# Webhook
+# Эндпоинт для Webhook
 @app.post("/webhook")
 async def webhook(request: Request):
     update = await request.json()
@@ -1460,32 +1457,31 @@ async def webhook(request: Request):
     await application.process_update(update_obj)
     return {"status": "ok"}
 
-# Настройка Webhook
+# Функция для настройки Webhook
 async def set_webhook():
     webhook_url = f"{WEBHOOK_URL}/webhook"
     logger.info(f"Setting webhook to {webhook_url}")
     await application.bot.setWebhook(webhook_url)
 
-# Инициализация и завершение работы
-@app.on_lifespan()
-async def lifespan():
-    try:
-        # Запуск
-        await startup()
-        setup_handlers(application)
-        await application.initialize()
-        await application.start()
-        await set_webhook()
-        yield
-    finally:
-        # Завершение
-        await application.stop()
-        await application.shutdown()
+# Инициализация при запуске
+@app.on_event("startup")
+async def on_startup():
+    await startup()  # Инициализация Google Sheets и данных
+    setup_handlers(application)  # Настройка обработчиков
+    await application.initialize()
+    await application.start()
+    await set_webhook()
+
+# Остановка при завершении
+@app.on_event("shutdown")
+async def on_shutdown():
+    await application.stop()
+    await application.shutdown()
 
 @app.get("/ping")
 async def ping():
     return {"status": "alive"}
-
-# Запуск
+    
+# Запуск приложения
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
