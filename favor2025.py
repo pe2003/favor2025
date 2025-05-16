@@ -26,7 +26,6 @@ from pyzbar.pyzbar import decode
 from logging.handlers import RotatingFileHandler
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
-from starlette.routing import Lifespan
 
 # Базовая директория
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1395,7 +1394,7 @@ def update_accommodation_status(user_id, context=None):
     retries = 3
     for attempt in range(retries):
         try:
-            records = worksheet.get_all_records()
+            records = Worksheet.get_all_records()
             for idx, record in enumerate(records):
                 if record['user_id'] == str(user_id):
                     cell_list = worksheet.row_values(idx + 1)
@@ -1406,7 +1405,7 @@ def update_accommodation_status(user_id, context=None):
             logger.warning(f"User_id {user_id} not found in records for accommodation status update")
             return
         except Exception as e:
-            logger.error(f"Ошибка обновления(big status (попытка {attempt+1}/{retries}): {e}")
+            logger.error(f"Ошибка обновления статуса (попытка {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(2 * (2 ** attempt))
             else:
@@ -1449,7 +1448,10 @@ def setup_handlers(app):
 # Инициализация FastAPI
 app = FastAPI()
 
-# Эндпоинт для Webhook
+# Глобальная переменная для Application
+application = ApplicationBuilder().token(TOKEN).build()
+
+# Webhook
 @app.post("/webhook")
 async def webhook(request: Request):
     update = await request.json()
@@ -1457,31 +1459,32 @@ async def webhook(request: Request):
     await application.process_update(update_obj)
     return {"status": "ok"}
 
-# Функция для настройки Webhook
+# Настройка Webhook
 async def set_webhook():
     webhook_url = f"{WEBHOOK_URL}/webhook"
     logger.info(f"Setting webhook to {webhook_url}")
     await application.bot.setWebhook(webhook_url)
 
-# Инициализация при запуске
-@app.on_event("startup")
-async def on_startup():
-    await startup()  # Инициализация Google Sheets и данных
-    setup_handlers(application)  # Настройка обработчиков
-    await application.initialize()
-    await application.start()
-    await set_webhook()
-
-# Остановка при завершении
-@app.on_event("shutdown")
-async def on_shutdown():
-    await application.stop()
-    await application.shutdown()
+# Инициализация и завершение работы
+@app.on_lifespan()
+async def lifespan():
+    try:
+        # Запуск
+        await startup()
+        setup_handlers(application)
+        await application.initialize()
+        await application.start()
+        await set_webhook()
+        yield
+    finally:
+        # Завершение
+        await application.stop()
+        await application.shutdown()
 
 @app.get("/ping")
 async def ping():
     return {"status": "alive"}
-    
-# Запуск приложения
+
+# Запуск
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
