@@ -89,7 +89,7 @@ else:
     logger.warning(f"Файл photo.jpg не найден по пути: {START_PHOTO_PATH}. Фото не будет отправлено.")
     START_PHOTO_PATH = None
 
-# Инициализация Google Sheets с повторными попытками
+# Инициализация Google Sheets
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/spreadsheets']
 worksheet = None
 accommodation_worksheet = None
@@ -124,17 +124,17 @@ async def init_google_sheets(retries=3, backoff=2):
                 logger.error("Не удалось инициализировать Google Sheets после всех попыток")
                 return False
 
-# Функция для экранировки специальных символов в Markdown
+# Экранировка Markdown
 def escape_markdown(text):
     if not isinstance(text, str):
         text = str(text)
     special_chars = r'([_*[\]()~`>#+\-=|{}.!])'
     return re.sub(special_chars, r'\\\1', text)
 
-# Состояния для ConversationHandler
-NAME, DAYS, ARRIVAL_DATE, CITY, PHONE, BIRTH_DATE, GENDER, ROOM, NOTIFICATION = range(9)
+# Состояния ConversationHandler
+NAME, DAYS, ARRIVAL_DATE, CITY, PHONE, BIRTH_DATE, GENDER, ROOM, SEND_NOTIFICATION = range(9)
 
-# Глобальные словари для хранения данных
+# Глобальные данные
 user_data = {}
 user_registration_ids = {}
 registrations = {}
@@ -158,7 +158,7 @@ STATS_FILE = os.path.join(BASE_DIR, 'stats.json')
 days_options = [1, 2, 3, 4]
 dates = ["03.07.2025", "04.07.2025", "05.07.2025", "06.07.2025"]
 
-# Функция для проверки прав бота в канале
+# Проверка прав бота
 async def check_channel_permissions(context: ContextTypes.DEFAULT_TYPE):
     try:
         bot = context.bot
@@ -175,7 +175,7 @@ async def check_channel_permissions(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка проверки прав бота в канале {CHANNEL_ID}: {e}")
         return False
 
-# Функция для отправки уведомлений админу с повторными попытками
+# Уведомление админу
 async def notify_admin(context, message, retries=3, backoff=2):
     escaped_message = escape_markdown(message)
     for attempt in range(retries):
@@ -195,7 +195,7 @@ async def notify_admin(context, message, retries=3, backoff=2):
                 logger.error(f"Не удалось отправить уведомление после {retries} попыток: {e}")
                 return False
 
-# Функция для создания динамической клавиатуры
+# Динамическая клавиатура
 def get_persistent_keyboard(user_id):
     keyboard = []
     first_row = []
@@ -216,7 +216,7 @@ def get_persistent_keyboard(user_id):
     logger.info(f"Generated keyboard for user_id={user_id}, user_room={user_id in user_room}, registered={user_id in registered_users}, accommodation_initiated={user_id in accommodation_initiated}")
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-# Функции загрузки и сохранения данных
+# Загрузка и сохранение данных
 def load_registrations():
     global registrations, user_registration_ids, registered_users
     if worksheet is None:
@@ -404,10 +404,10 @@ def save_stats(context=None):
                 if context:
                     asyncio.create_task(notify_admin(context, f"Ошибка сохранения статистики после {retries} попыток: {e}"))
 
-# Инициализация данных при запуске
+# Инициализация данных
 load_stats()
 
-# Асинхронная инициализация Google Sheets
+# Асинхронная инициализация
 async def startup():
     await init_google_sheets()
     load_registrations()
@@ -482,12 +482,9 @@ async def handle_admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=reply_markup
         )
     elif text == "Отправить уведомление":
-        logger.info(f"Notification process initiated by user_id={user_id}")
-        await update.message.reply_text(
-            "Введите текст уведомления для отправки всем пользователям:",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return NOTIFICATION
+        logger.info(f"Send notification initiated by user_id={user_id}")
+        await update.message.reply_text("Введите текст уведомления для всех пользователей:", reply_markup=ReplyKeyboardRemove())
+        return SEND_NOTIFICATION
     elif text == "Выйти из админки":
         logger.info(f"Admin logout: user_id={user_id}")
         admin_users.remove(user_id)
@@ -503,7 +500,7 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in admin_users:
         logger.info(f"Unauthorized notification attempt: user_id={user_id}")
         await update.message.reply_text(
-            "Вы не администратор.",
+            "Вы не авторизованы.",
             reply_markup=get_persistent_keyboard(user_id)
         )
         return ConversationHandler.END
@@ -513,17 +510,16 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Текст уведомления не может быть пустым. Попробуйте снова:",
             reply_markup=admin_keyboard
         )
-        return NOTIFICATION
-    logger.info(f"Notification text received: user_id={user_id}, text={notification_text}")
+        return SEND_NOTIFICATION
+    logger.info(f"Sending notification by user_id={user_id}, text={notification_text}")
     sent_count = 0
     retries = 3
-    escaped_notification = escape_markdown(notification_text)
     for uid in stats['bot_opened']:
         for attempt in range(retries):
             try:
                 await context.bot.send_message(
                     chat_id=uid,
-                    text=escaped_notification,
+                    text=notification_text,
                     parse_mode='Markdown',
                     reply_markup=get_persistent_keyboard(uid)
                 )
@@ -1417,9 +1413,6 @@ def update_accommodation_status(user_id, context=None):
                 if context:
                     asyncio.create_task(notify_admin(context, f"Ошибка обновления статуса user_id={user_id} после {retries} попыток: {e}"))
 
-# Инициализация приложения Telegram
-application = ApplicationBuilder().token(TOKEN).build()
-
 # Настройка обработчиков
 def setup_handlers(app):
     conv_handler = ConversationHandler(
@@ -1439,7 +1432,7 @@ def setup_handlers(app):
             BIRTH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birth_date)],
             GENDER: [CallbackQueryHandler(button_callback, pattern='^gender_(Мужской|Женский)$')],
             ROOM: [CallbackQueryHandler(button_callback, pattern='^room_[1-9]|room_10$')],
-            NOTIFICATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_notification)]
+            SEND_NOTIFICATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_notification)]
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
@@ -1455,7 +1448,7 @@ def setup_handlers(app):
 # Инициализация FastAPI
 app = FastAPI()
 
-# Эндпоинт для Webhook
+# Webhook
 @app.post("/webhook")
 async def webhook(request: Request):
     update = await request.json()
@@ -1463,13 +1456,13 @@ async def webhook(request: Request):
     await application.process_update(update_obj)
     return {"status": "ok"}
 
-# Функция для настройки Webhook
+# Настройка Webhook
 async def set_webhook():
     webhook_url = f"{WEBHOOK_URL}/webhook"
     logger.info(f"Setting webhook to {webhook_url}")
     await application.bot.setWebhook(webhook_url)
 
-# Инициализация при запуске
+# Инициализация
 @app.on_event("startup")
 async def on_startup():
     await startup()
@@ -1478,7 +1471,7 @@ async def on_startup():
     await application.start()
     await set_webhook()
 
-# Остановка при завершении
+# Остановка
 @app.on_event("shutdown")
 async def on_shutdown():
     await application.stop()
@@ -1488,6 +1481,6 @@ async def on_shutdown():
 async def ping():
     return {"status": "alive"}
 
-# Запуск приложения
+# Запуск
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
