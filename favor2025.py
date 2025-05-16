@@ -52,8 +52,8 @@ ALLOWED_ADMIN_IDS = set(map(int, os.getenv('ALLOWED_ADMIN_IDS', '').split(',')))
 GOOGLE_SHEETS_KEY = os.getenv('GOOGLE_SHEETS_KEY')
 GOOGLE_CREDENTIALS_JSON = os.getenv('GOOGLE_CREDENTIALS_JSON')
 ORGANIZER_CONTACT = os.getenv('ORGANIZER_CONTACT', '@Organizer')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Новая переменная окружения для Webhook URL
-PORT = int(os.getenv('PORT', 8000))  # Порт для Render, по умолчанию 8000
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+PORT = int(os.getenv('PORT', 8000))
 
 # Проверка обязательных переменных
 if not TOKEN:
@@ -79,12 +79,12 @@ if not WEBHOOK_URL:
 START_PHOTO_PATH = os.path.join(BASE_DIR, 'photo.jpg')
 
 # Проверка существования и размера файла photo.jpg
-MAX_PHOTO_SIZE_MB = 5  # Максимальный размер фото в МБ
+MAX_PHOTO_SIZE_MB = 5
 if os.path.exists(START_PHOTO_PATH):
-    photo_size_mb = os.path.getsize(START_PHOTO_PATH) / (1024 * 1024)  # Размер в МБ
+    photo_size_mb = os.path.getsize(START_PHOTO_PATH) / (1024 * 1024)
     if photo_size_mb > MAX_PHOTO_SIZE_MB:
         logger.warning(f"Файл photo.jpg слишком большой: {photo_size_mb:.2f} МБ. Максимум: {MAX_PHOTO_SIZE_MB} МБ. Фото не будет отправлено.")
-        START_PHOTO_PATH = None  # Отключаем отправку фото, если файл слишком большой
+        START_PHOTO_PATH = None
 else:
     logger.warning(f"Файл photo.jpg не найден по пути: {START_PHOTO_PATH}. Фото не будет отправлено.")
     START_PHOTO_PATH = None
@@ -132,7 +132,7 @@ def escape_markdown(text):
     return re.sub(special_chars, r'\\\1', text)
 
 # Состояния для ConversationHandler
-NAME, DAYS, ARRIVAL_DATE, CITY, PHONE, BIRTH_DATE, GENDER, ROOM = range(8)
+NAME, DAYS, ARRIVAL_DATE, CITY, PHONE, BIRTH_DATE, GENDER, ROOM, NOTIFICATION = range(9)
 
 # Глобальные словари для хранения данных
 user_data = {}
@@ -415,7 +415,7 @@ async def startup():
 
 admin_keyboard = ReplyKeyboardMarkup([
     ["Статистика", "Очистить регистрации"],
-    ["Разложить спать"],
+    ["Разложить спать", "Отправить уведомление"],
     ["Выйти из админки"]
 ], resize_keyboard=True, one_time_keyboard=False)
 
@@ -481,6 +481,13 @@ async def handle_admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             "Начать процесс разложения спать для всех пользователей?",
             reply_markup=reply_markup
         )
+    elif text == "Отправить уведомление":
+        logger.info(f"Notification process initiated by user_id={user_id}")
+        await update.message.reply_text(
+            "Введите текст уведомления для отправки всем пользователям:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return NOTIFICATION
     elif text == "Выйти из админки":
         logger.info(f"Admin logout: user_id={user_id}")
         admin_users.remove(user_id)
@@ -489,6 +496,52 @@ async def handle_admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             "Вы вышли из режима администратора.",
             reply_markup=get_persistent_keyboard(user_id)
         )
+    return ConversationHandler.END
+
+async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id not in admin_users:
+        logger.info(f"Unauthorized notification attempt: user_id={user_id}")
+        await update.message.reply_text(
+            "Вы не администратор.",
+            reply_markup=get_persistent_keyboard(user_id)
+        )
+        return ConversationHandler.END
+    notification_text = update.message.text.strip()
+    if not notification_text:
+        await update.message.reply_text(
+            "Текст уведомления не может быть пустым. Попробуйте снова:",
+            reply_markup=admin_keyboard
+        )
+        return NOTIFICATION
+    logger.info(f"Notification text received: user_id={user_id}, text={notification_text}")
+    sent_count = 0
+    retries = 3
+    escaped_notification = escape_markdown(notification_text)
+    for uid in stats['bot_opened']:
+        for attempt in range(retries):
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=escaped_notification,
+                    parse_mode='Markdown',
+                    reply_markup=get_persistent_keyboard(uid)
+                )
+                sent_count += 1
+                await asyncio.sleep(0.1)
+                logger.info(f"Notification sent to user_id={uid}")
+                break
+            except Exception as e:
+                logger.error(f"Error sending notification to user_id={uid} (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 * (2 ** attempt))
+                else:
+                    await notify_admin(context, f"Ошибка отправки уведомления user_id={uid} после {retries} попыток: {e}")
+    await update.message.reply_text(
+        f"Уведомление отправлено {sent_count} пользователям.",
+        reply_markup=admin_keyboard
+    )
+    logger.info(f"Notification sent to {sent_count} users by user_id={user_id}")
     return ConversationHandler.END
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1372,6 +1425,7 @@ def setup_handlers(app):
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(button_callback, pattern='^(agree|confirm_clear|cancel_clear|confirm_sleep|cancel_sleep|need_accommodation|no_accommodation|room_[1-9]|room_10|cancel_accommodation_user|request_accommodation|show_qr|gender_Мужской|gender_Женский)$'),
+            MessageHandler(filters.Text(["Отправить уведомление"]) & ~filters.COMMAND, handle_admin_buttons)
         ],
         states={
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
@@ -1385,10 +1439,11 @@ def setup_handlers(app):
             BIRTH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birth_date)],
             GENDER: [CallbackQueryHandler(button_callback, pattern='^gender_(Мужской|Женский)$')],
             ROOM: [CallbackQueryHandler(button_callback, pattern='^room_[1-9]|room_10$')],
+            NOTIFICATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_notification)]
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
-    admin_buttons = ["Статистика", "Очистить регистрации", "Разложить спать", "Выйти из админки"]
+    admin_buttons = ["Статистика", "Очистить регистрации", "Разложить спать", "Отправить уведомление", "Выйти из админки"]
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_login))
     app.add_handler(MessageHandler(filters.Text(admin_buttons) & ~filters.COMMAND, handle_admin_buttons))
@@ -1417,8 +1472,8 @@ async def set_webhook():
 # Инициализация при запуске
 @app.on_event("startup")
 async def on_startup():
-    await startup()  # Инициализация Google Sheets и данных
-    setup_handlers(application)  # Настройка обработчиков
+    await startup()
+    setup_handlers(application)
     await application.initialize()
     await application.start()
     await set_webhook()
@@ -1432,7 +1487,7 @@ async def on_shutdown():
 @app.get("/ping")
 async def ping():
     return {"status": "alive"}
-    
+
 # Запуск приложения
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
